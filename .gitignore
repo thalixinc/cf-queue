@@ -1,0 +1,7 @@
+/target
+.omp/
+*.tmp
+
+# Internal design notes (reference private repo internals) — stay local.
+BRAINSTORM.md
+BRAINSTORM-PROMPT.md

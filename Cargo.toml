@@ -1,0 +1,17 @@
+[package]
+name = "cf-queue"
+version = "0.1.0"
+edition = "2021"
+description = "AXI-compliant GitHub-issue work queue for AI agents — high-level verbs over gh-axi/gh, GitHub issues as the source of truth"
+license = "MIT"
+repository = "https://github.com/thalixinc/cf-queue"
+keywords = ["axi", "github", "queue", "agent", "cli", "toon"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
