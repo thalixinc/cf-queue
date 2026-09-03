@@ -17,12 +17,13 @@ cf-queue --help     # full command reference
 
 Core verbs:
 
-- `cf-queue add <title> [--body …] [--label …] [--assignee …]` — file work (creates an issue).
+- `cf-queue add <title> [--body …] [--label …] [--assignee …] [--epic <n>] [--requested-by owner/repo#<m>]` — file work (creates an issue; `--epic` writes `Parent epic: #<n>` first and links the sub-issue).
 - `cf-queue list [--state queued|in-flight|done|hold|blocked]` — the queue.
 - `cf-queue ready` — work that is dispatchable now (open, unassigned, un-held, un-blocked).
 - `cf-queue start <n>` — claim it (assign yourself → in-flight).
 - `cf-queue done <n> [--pr <url>]` — close it.
-- `cf-queue hold <n> [--kind captain]` / `unhold <n>` — pause / resume.
-- `cf-queue block <n> --by <m>` / `unblock <n> --by <m>` — dependency edges.
+- `cf-queue show <n>` — one issue with `epic`, `requested_by`, `artifacts`, `blocked_by` (each edge resolved).
+- `cf-queue hold <n> [--kind founder]` / `unhold <n>` — pause / resume (`hold:founder` = waiting on the founder).
+- `cf-queue block <n> --by <m>|owner/repo#<m>` / `unblock <n> --by …` — dependency edges, same-repo or cross-repo.
 
-State is derived from the issue: `queued` = open + unassigned · `in-flight` = open + assigned · `done` = closed · `hold` = `hold` label · `blocked` = `blocked-by: #<n>` line in the body.
+State is derived from the issue: `queued` = open + unassigned · `in-flight` = open + assigned · `done` = closed · `hold` = `hold` label · `blocked` = `blocked-by: #<n>` or `blocked-by: owner/repo#<m>` line in the body with that issue still open (an unresolvable cross-repo edge blocks and is reported under `warnings:`).

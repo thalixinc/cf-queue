@@ -18,7 +18,7 @@ struct Parsed {
 }
 
 impl Parsed {
-    fn parse(args: &[String]) -> Parsed {
+    fn parse(args: &[String]) -> Result<Parsed> {
         let mut positionals = Vec::new();
         let mut flags: HashMap<String, Vec<String>> = HashMap::new();
         let mut i = 0;
@@ -30,11 +30,12 @@ impl Parsed {
                         .entry(name.to_string())
                         .or_default()
                         .push(value.to_string());
-                } else if i + 1 < args.len() && takes_value(rest) {
-                    flags
-                        .entry(rest.to_string())
-                        .or_default()
-                        .push(args[i + 1].clone());
+                } else if takes_value(rest) {
+                    // A value flag with nothing after it must not silently become "absent".
+                    let v = args
+                        .get(i + 1)
+                        .ok_or_else(|| QueueError::usage(format!("--{rest} needs a value")))?;
+                    flags.entry(rest.to_string()).or_default().push(v.clone());
                     i += 1;
                 } else {
                     flags.entry(rest.to_string()).or_default();
@@ -46,7 +47,7 @@ impl Parsed {
             }
             i += 1;
         }
-        Parsed { positionals, flags }
+        Ok(Parsed { positionals, flags })
     }
 
     fn flag(&self, name: &str) -> bool {
@@ -65,7 +66,17 @@ impl Parsed {
 fn takes_value(name: &str) -> bool {
     matches!(
         name,
-        "body" | "body-file" | "label" | "assignee" | "repo" | "state" | "pr" | "kind" | "by"
+        "body"
+            | "body-file"
+            | "label"
+            | "assignee"
+            | "repo"
+            | "state"
+            | "pr"
+            | "kind"
+            | "by"
+            | "epic"
+            | "requested-by"
     )
 }
 
@@ -75,17 +86,20 @@ fn help() -> String {
          commands[13]:\n\
          \x20 (none)=dashboard(list), add, list, show, start, done, reopen, hold, unhold, block, unblock, ready, version, update, setup\n\
          state model:\n\
-         \x20 queued = open + unassigned · in-flight = open + assigned · done = closed · hold = `hold` label · blocked = `blocked-by: #<n>` in body\n\
+         \x20 queued = open + unassigned · in-flight = open + assigned · done = closed · hold = `hold`/`hold:founder` label · blocked = `blocked-by: #<n>` or `owner/repo#<m>` in body (still open)\n\
+         body lines:\n\
+         \x20 Parent epic: #<n> (add --epic) · Requested-by: owner/repo#<m> (add --requested-by) · Artifacts: <path> · shown by `show`\n\
          flags: --repo <owner/name>, --json, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} add \"Fix login\" --label bug\n\
-         \x20 {BIN} list --state ready\n\
+         \x20 {BIN} add \"Status field\" --epic 12 --requested-by owner/repo#45 --label task\n\
+         \x20 {BIN} list --state blocked\n\
          \x20 {BIN} ready\n\
          \x20 {BIN} show 42\n\
          \x20 {BIN} start 42\n\
          \x20 {BIN} done 42 --pr https://github.com/o/r/pull/7\n\
-         \x20 {BIN} hold 42 --kind captain\n\
-         \x20 {BIN} block 42 --by 39\n\
+         \x20 {BIN} hold 42 --kind founder\n\
+         \x20 {BIN} block 42 --by 39 | --by owner/repo#3\n\
          \x20 {BIN} setup skill | setup hooks\n\
          \x20 {BIN} version | update [--check]"
     )
@@ -116,7 +130,7 @@ fn dispatch(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    let parsed = Parsed::parse(args);
+    let parsed = Parsed::parse(args)?;
     let cmd = parsed.positionals.first().map(String::as_str).unwrap_or("");
     let rest = &parsed.positionals[1..];
     let json = parsed.flag("json");
@@ -129,12 +143,23 @@ fn dispatch(args: &[String]) -> Result<()> {
             let body_file = parsed.value("body-file");
             let labels = parsed.values("label");
             let assignees = parsed.values("assignee");
+            let epic = match parsed.value("epic") {
+                Some(e) => Some(
+                    e.trim_start_matches('#')
+                        .parse::<u64>()
+                        .map_err(|_| QueueError::usage("invalid --epic number"))?,
+                ),
+                None => None,
+            };
+            let requested_by = parsed.value("requested-by");
             ops::add(
                 title,
                 body.as_deref(),
                 body_file.as_deref(),
                 &labels,
                 &assignees,
+                epic,
+                requested_by.as_deref(),
                 repo.as_deref(),
                 json,
             )
@@ -170,23 +195,16 @@ fn dispatch(args: &[String]) -> Result<()> {
             let n = number(rest, 0, "issue")?;
             ops::unhold(n, repo.as_deref(), json)
         }
-        "block" => {
+        "block" | "unblock" => {
             let n = number(rest, 0, "issue")?;
             let by = parsed
                 .value("by")
-                .ok_or_else(|| QueueError::usage("missing --by <n>"))?
-                .parse::<u64>()
-                .map_err(|_| QueueError::usage("invalid --by number"))?;
-            ops::block(n, by, repo.as_deref(), json)
-        }
-        "unblock" => {
-            let n = number(rest, 0, "issue")?;
-            let by = parsed
-                .value("by")
-                .ok_or_else(|| QueueError::usage("missing --by <n>"))?
-                .parse::<u64>()
-                .map_err(|_| QueueError::usage("invalid --by number"))?;
-            ops::unblock(n, by, repo.as_deref(), json)
+                .ok_or_else(|| QueueError::usage("missing --by <n> | owner/repo#<m>"))?;
+            if cmd == "block" {
+                ops::block(n, &by, repo.as_deref(), json)
+            } else {
+                ops::unblock(n, &by, repo.as_deref(), json)
+            }
         }
         "version" => {
             version::cmd_version();

@@ -6,7 +6,8 @@
 
 use crate::error::{QueueError, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::process::Command;
 
 const LIST_FIELDS: &str = "number,title,state,assignees,labels,body,url";
@@ -51,6 +52,113 @@ fn run_gh(args: &[&str]) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Issue references / blocked-by edges
+// ---------------------------------------------------------------------------
+
+/// An issue reference: same-repo (`#n`) or cross-repo (`owner/repo#n`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Edge {
+    pub repo: Option<String>,
+    pub number: u64,
+}
+
+impl Edge {
+    /// Parse `39`, `#39`, or `owner/repo#39`.
+    pub fn parse(s: &str) -> Result<Edge> {
+        let s = s.trim();
+        let bad = || {
+            QueueError::usage(format!(
+                "invalid issue reference {s:?} — use <n>, #<n>, or owner/repo#<n>"
+            ))
+        };
+        let (repo, num) = match s.rsplit_once('#') {
+            Some((r, n)) => (r, n),
+            None => ("", s),
+        };
+        let number = num.parse::<u64>().map_err(|_| bad())?;
+        if repo.is_empty() {
+            return Ok(Edge { repo: None, number });
+        }
+        let well_formed = repo
+            .split_once('/')
+            .is_some_and(|(o, r)| !o.is_empty() && !r.is_empty() && !r.contains('/'));
+        if !well_formed {
+            return Err(bad());
+        }
+        Ok(Edge { repo: Some(repo.to_string()), number })
+    }
+
+    pub fn is_cross(&self) -> bool {
+        self.repo.is_some()
+    }
+}
+
+impl fmt::Display for Edge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.repo {
+            Some(r) => write!(f, "{r}#{}", self.number),
+            None => write!(f, "#{}", self.number),
+        }
+    }
+}
+
+/// Resolved blocker state for one `list`/`ready` pass. Same-repo edges resolve
+/// against the open set already fetched; cross-repo edges are looked up once each.
+/// An edge that could not be resolved (unknown repo, no permission) blocks and is
+/// reported through `warnings()` — never silently ignored.
+#[derive(Default, Debug)]
+pub struct Blockers {
+    pub open_same: HashSet<u64>,
+    pub cross: HashMap<Edge, std::result::Result<bool, String>>,
+}
+
+impl Blockers {
+    pub fn blocks(&self, e: &Edge) -> bool {
+        match e.repo {
+            None => self.open_same.contains(&e.number),
+            Some(_) => match self.cross.get(e) {
+                Some(Ok(open)) => *open,
+                _ => true,
+            },
+        }
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        let mut w: Vec<String> = self
+            .cross
+            .iter()
+            .filter_map(|(e, r)| r.as_ref().err().map(|m| format!("{e}: {m} (treated as blocking)")))
+            .collect();
+        w.sort();
+        w
+    }
+}
+
+/// Is the issue open? `repo` None means gh's default repo detection.
+pub fn issue_open(repo: Option<&str>, number: u64) -> Result<bool> {
+    let n = number.to_string();
+    let mut args: Vec<&str> = vec!["issue", "view", &n, "--json", "state"];
+    args.extend(repo_args(repo));
+    let text = run_gh(&args)?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| QueueError::operational(format!("cannot parse state: {e}"), "GH_PARSE"))?;
+    Ok(v["state"].as_str() == Some("OPEN"))
+}
+
+/// Build the blocker table for a set of issues: every cross-repo edge looked up once.
+pub fn resolve_blockers(issues: &[Issue], open_same: HashSet<u64>) -> Blockers {
+    let mut b = Blockers { open_same, cross: HashMap::new() };
+    for e in issues.iter().flat_map(|i| i.blocked_by()).filter(Edge::is_cross) {
+        if b.cross.contains_key(&e) {
+            continue;
+        }
+        let r = issue_open(e.repo.as_deref(), e.number).map_err(|err| err.message);
+        b.cross.insert(e, r);
+    }
+    b
+}
+
+// ---------------------------------------------------------------------------
 // Issue model
 // ---------------------------------------------------------------------------
 
@@ -90,10 +198,9 @@ impl Issue {
         !self.assignees.is_empty()
     }
 
+    /// `hold` or any `hold:<kind>` label.
     pub fn has_hold(&self) -> bool {
-        self.labels
-            .iter()
-            .any(|l| l.name == "hold" || l.name == "hold:captain")
+        self.labels.iter().any(|l| is_hold_label(&l.name))
     }
 
     pub fn assignee_logins(&self) -> String {
@@ -112,31 +219,51 @@ impl Issue {
             .join(",")
     }
 
-    /// Parse `blocked-by: #<n>` edges from the body.
-    pub fn blocked_by(&self) -> Vec<u64> {
-        let mut out = Vec::new();
-        for line in self.body.lines() {
-            let t = line.trim();
-            if let Some(rest) = t.strip_prefix("blocked-by:") {
-                if let Some(num) = rest.trim().strip_prefix('#') {
-                    if let Ok(n) = num.split_whitespace().next().unwrap_or("").parse::<u64>() {
-                        out.push(n);
-                    }
-                }
-            }
-        }
-        out
+    /// Parse `blocked-by: #<n>` and `blocked-by: owner/repo#<n>` edges from the body.
+    /// The body grammar is strict (a `#` is required); bare numbers are CLI-only.
+    pub fn blocked_by(&self) -> Vec<Edge> {
+        self.body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("blocked-by:"))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .filter(|tok| tok.contains('#'))
+            .filter_map(|tok| Edge::parse(tok).ok())
+            .collect()
+    }
+
+    /// First non-empty `key …` body line, trimmed remainder.
+    fn body_field(&self, key: &str) -> Option<String> {
+        self.body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key).map(str::trim).filter(|r| !r.is_empty()))
+            .map(str::to_string)
+    }
+
+    /// `Parent epic: #<n>` → n.
+    pub fn epic(&self) -> Option<u64> {
+        self.body_field("Parent epic:")
+            .and_then(|r| r.trim_start_matches('#').split_whitespace().next()?.parse().ok())
+    }
+
+    /// `Requested-by: owner/repo#<m>`.
+    pub fn requested_by(&self) -> Option<String> {
+        self.body_field("Requested-by:")
+    }
+
+    /// `Artifacts: <path>`.
+    pub fn artifacts(&self) -> Option<String> {
+        self.body_field("Artifacts:")
     }
 
     /// The primary queue state (priority: done > hold > blocked > in-flight > queued).
-    pub fn state_of(&self, open_numbers: &HashSet<u64>) -> &'static str {
+    pub fn state_of(&self, blockers: &Blockers) -> &'static str {
         if !self.is_open() {
             return "done";
         }
         if self.has_hold() {
             return "hold";
         }
-        if self.blocked_by().iter().any(|n| open_numbers.contains(n)) {
+        if self.blocked_by().iter().any(|e| blockers.blocks(e)) {
             return "blocked";
         }
         if self.assigned() {
@@ -144,6 +271,10 @@ impl Issue {
         }
         "queued"
     }
+}
+
+pub fn is_hold_label(name: &str) -> bool {
+    name == "hold" || name.starts_with("hold:")
 }
 
 pub fn gh_list_issues(state: &str, repo: Option<&str>) -> Result<Vec<Issue>> {
@@ -212,23 +343,49 @@ mod tests {
         }
     }
 
-    fn open_set(nums: &[u64]) -> HashSet<u64> {
-        nums.iter().copied().collect()
+    fn same(n: u64) -> Edge {
+        Edge { repo: None, number: n }
+    }
+
+    fn cross(repo: &str, n: u64) -> Edge {
+        Edge { repo: Some(repo.into()), number: n }
+    }
+
+    fn blockers(open: &[u64]) -> Blockers {
+        Blockers { open_same: open.iter().copied().collect(), cross: HashMap::new() }
+    }
+
+    #[test]
+    fn parses_edge_forms() {
+        assert_eq!(Edge::parse("39").unwrap(), same(39));
+        assert_eq!(Edge::parse("#39").unwrap(), same(39));
+        assert_eq!(Edge::parse("thalixinc/other#3").unwrap(), cross("thalixinc/other", 3));
+        for bad in ["", "x", "#", "other#3", "a/b/c#3", "thalixinc/#3", "/r#3", "a/b#x"] {
+            assert!(Edge::parse(bad).is_err(), "{bad:?} should be rejected");
+        }
+        assert_eq!(same(7).to_string(), "#7");
+        assert_eq!(cross("o/r", 7).to_string(), "o/r#7");
     }
 
     #[test]
     fn parses_blocked_by_edges() {
-        let i = issue("OPEN", &[], &[], "some text\nblocked-by: #7\nblocked-by: #9 - needs refactor\nmore");
-        assert_eq!(i.blocked_by(), vec![7, 9]);
+        let i = issue(
+            "OPEN",
+            &[],
+            &[],
+            "some text\nblocked-by: #7\nblocked-by: #9 - needs refactor\nblocked-by: o/r#3\nblocked-by: junk\nblocked-by: 2 things\nmore",
+        );
+        assert_eq!(i.blocked_by(), vec![same(7), same(9), cross("o/r", 3)]);
     }
 
     #[test]
     fn classifies_queue_states() {
-        let s = open_set(&[7]);
+        let s = blockers(&[7]);
         assert_eq!(issue("OPEN", &[], &[], "").state_of(&s), "queued");
         assert_eq!(issue("OPEN", &["me"], &[], "").state_of(&s), "in-flight");
         assert_eq!(issue("CLOSED", &[], &[], "").state_of(&s), "done");
         assert_eq!(issue("OPEN", &[], &["hold"], "").state_of(&s), "hold");
+        assert_eq!(issue("OPEN", &[], &["hold:founder"], "").state_of(&s), "hold");
         assert_eq!(issue("OPEN", &[], &["hold:captain"], "").state_of(&s), "hold");
         assert_eq!(issue("OPEN", &[], &[], "blocked-by: #7").state_of(&s), "blocked");
     }
@@ -236,13 +393,47 @@ mod tests {
     #[test]
     fn closed_blocker_is_not_blocking() {
         // blocker #7 is NOT in the open set → not blocking → queued
-        let s = open_set(&[]);
+        let s = blockers(&[]);
         assert_eq!(issue("OPEN", &[], &[], "blocked-by: #7").state_of(&s), "queued");
     }
 
     #[test]
+    fn cross_repo_edges_resolve_by_state_and_unknown_blocks() {
+        let i = issue("OPEN", &[], &[], "blocked-by: o/r#3");
+        let mut b = blockers(&[]);
+        b.cross.insert(cross("o/r", 3), Ok(true));
+        assert_eq!(i.state_of(&b), "blocked");
+        b.cross.insert(cross("o/r", 3), Ok(false));
+        assert_eq!(i.state_of(&b), "queued");
+        b.cross.insert(cross("o/r", 3), Err("gh failed: not found".into()));
+        assert_eq!(i.state_of(&b), "blocked");
+        assert_eq!(b.warnings(), vec!["o/r#3: gh failed: not found (treated as blocking)"]);
+        // never looked up at all → still blocking
+        assert_eq!(i.state_of(&blockers(&[])), "blocked");
+    }
+
+    #[test]
     fn hold_beats_in_flight() {
-        let s = open_set(&[]);
+        let s = blockers(&[]);
         assert_eq!(issue("OPEN", &["me"], &["hold"], "").state_of(&s), "hold");
+    }
+
+    #[test]
+    fn parses_body_fields() {
+        let i = issue(
+            "OPEN",
+            &[],
+            &[],
+            "Parent epic: #12\nRequested-by: thalixinc/a#45\n\nArtifacts: intent/12-x/tickets/40-y/\nbody",
+        );
+        assert_eq!(i.epic(), Some(12));
+        assert_eq!(i.requested_by().as_deref(), Some("thalixinc/a#45"));
+        assert_eq!(i.artifacts().as_deref(), Some("intent/12-x/tickets/40-y/"));
+        let none = issue("OPEN", &[], &[], "Parent epic:\nplain");
+        assert_eq!(none.epic(), None);
+        let later = issue("OPEN", &[], &[], "Parent epic:\nParent epic: #5");
+        assert_eq!(later.epic(), Some(5));
+        assert_eq!(none.requested_by(), None);
+        assert_eq!(none.artifacts(), None);
     }
 }

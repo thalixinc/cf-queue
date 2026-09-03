@@ -1,6 +1,6 @@
 [package]
 name = "cf-queue"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AXI-compliant GitHub-issue work queue for AI agents — high-level verbs over gh-axi/gh, GitHub issues as the source of truth"
 license = "MIT"

@@ -16,8 +16,8 @@ AXI-compliant Rust CLI that turns GitHub issues into a durable work queue for AI
 | `queued` | issue open, unassigned (and not held/blocked) |
 | `in-flight` | issue open, assigned |
 | `done` | issue closed (reason completed) |
-| `hold` | label `hold` (or `hold:captain`) |
-| `blocked` | `blocked-by: #<n>` line in body, with `#<n>` still open |
+| `hold` | label `hold` or `hold:founder` (any `hold:*`; `hold:captain` is read for one more release) |
+| `blocked` | `blocked-by: #<n>` or `blocked-by: owner/repo#<m>` line in body, with that issue still open |
 
 ## Install
 
@@ -37,23 +37,37 @@ cf-queue start 42             # claim it
 cf-queue done 42 --pr https://github.com/o/r/pull/7
 cf-queue block 42 --by 39     # 42 depends on 39
 cf-queue ready                # 42 disappears until 39 closes
+cf-queue block 42 --by thalixinc/other#3   # cross-repo edge, resolved by other#3's state
+cf-queue add "Status field for A#45" --epic 12 --requested-by thalixinc/a#45 --label task
+cf-queue hold 42 --kind founder            # waits on the founder (label hold:founder)
 ```
+
+## Body lines cf-queue reads and writes
+
+| Line | Written by | Read by |
+|---|---|---|
+| `Parent epic: #<n>` (first line) | `add --epic <n>` (also links the sub-issue via `gh-axi issue subissue add`) | `show` → `epic` |
+| `Requested-by: owner/repo#<m>` | `add --requested-by` | `show` → `requested_by` |
+| `Artifacts: <path>` | the SDLC tooling | `show` → `artifacts` |
+| `blocked-by: #<n>` / `blocked-by: owner/repo#<m>` | `block` / `unblock` | `list`, `ready`, `show` |
+
+`add` keeps any `--body` / `--body-file` content after the machine lines.
 
 ## Verbs
 
 | Verb | gh call |
 |---|---|
-| `add <title> [--body/--body-file] [--label]… [--assignee]…` | `gh-axi issue create` |
+| `add <title> [--body/--body-file] [--label]… [--assignee]… [--epic <n>] [--requested-by owner/repo#<m>]` | `gh-axi issue create` (+ `issue subissue add <n> <new>` with `--epic`) |
 | `list [--state queued\|in-flight\|done\|hold\|blocked]` | `gh issue list --json …` + local derivation |
-| `show <n>` | `gh issue view --json …` |
+| `show <n>` | `gh issue view --json …`; prints `epic`, `requested_by`, `artifacts`, `blocked_by` (each edge resolved: open / closed / unresolved) |
 | `start <n>` | `gh-axi issue edit <n> --add-assignee @me` |
 | `done <n> [--pr <url>]` | `gh-axi issue close <n> --reason completed [--comment "PR: <url>"]` |
 | `reopen <n>` | `gh-axi issue reopen <n>` |
-| `hold <n> [--kind captain]` | `gh-axi issue edit <n> --add-label hold[:captain]` |
-| `unhold <n>` | `gh-axi issue edit <n> --remove-label hold --remove-label hold:captain` |
-| `block <n> --by <m>` | append `blocked-by: #<m>` to body |
-| `unblock <n> --by <m>` | remove that line from body |
-| `ready` | open + unassigned + un-held + un-blocked |
+| `hold <n> [--kind founder]` | `gh-axi issue edit <n> --add-label hold` or `hold:founder` (`--kind captain` is a deprecated alias for `founder`, removed next release) |
+| `unhold <n>` | `gh-axi issue edit <n> --remove-label …` for the hold labels the issue carries (`already: true` when none) |
+| `block <n> --by <m>\|owner/repo#<m>` | append `blocked-by: #<m>` or `blocked-by: owner/repo#<m>` to body |
+| `unblock <n> --by …` | remove that line from body |
+| `ready` | open + unassigned + un-held + un-blocked (cross-repo blockers checked with `gh issue view -R owner/repo <m> --json state`) |
 
 Global flags: `--repo <owner/name>` (default: gh's repo detection), `--json`, `--help`, `-v/--version`. Plus `version`, `update [--check]`, `setup skill|hooks [--project]` — same shape as the rest of the AXI family.
 
@@ -63,7 +77,7 @@ Global flags: `--repo <owner/name>` (default: gh's repo detection), `--json`, `-
 
 ## Known limitations
 
-- `blocked-by:` edges are **same-repo only** (`#<n>`), resolved against the open-issue list; cross-repo blockers are out of scope.
+- Same-repo `blocked-by:` edges resolve against the open-issue list (no extra calls); each distinct cross-repo edge costs one `gh issue view` per `list`/`ready`. An edge that cannot be resolved (unknown repo, no permission) **counts as blocking** and is listed under `warnings:` (`--json`: `warnings[]`), never silently ignored.
 - `ready` fetches all open issues (bounded by `--limit 100`); fine for a codefactory-scale queue, not a 10k-issue monorepo.
 - `hold` and `blocked` are presented as a single primary state (priority done > hold > blocked > in-flight > queued); a held in-flight issue shows as `hold`.
 
