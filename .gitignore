@@ -5,3 +5,6 @@
 # Internal design notes (reference private repo internals) — stay local.
 BRAINSTORM.md
 BRAINSTORM-PROMPT.md
+.claude/settings.local.json
+.omp/state/
+.omp/lavish/
