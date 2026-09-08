@@ -2,6 +2,8 @@
 
 AXI-compliant Rust CLI that turns GitHub issues into a durable work queue for AI agents. A thin, single-owner wrapper over `gh-axi` (mutations) and `gh` (structured reads) — **GitHub issues are the single source of truth**; the tool only encodes the state-machine + conventions layer on top.
 
+Working agreement: [`intent/README.md`](intent/README.md) (the chain and the five verbs) and [`REVIEW.md`](REVIEW.md) (the review policy).
+
 ## What it gives the agent
 
 - **One verb per intent**, not a remembered `gh` recipe: `cf-queue start 42` assigns the issue to you; `cf-queue ready` lists dispatchable work.
