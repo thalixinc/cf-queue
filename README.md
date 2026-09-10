@@ -62,6 +62,8 @@ cf-queue hold 42 --kind founder            # waits on the founder (label hold:fo
 | `show <n>` | `gh issue view --json …`; prints `epic`, `requested_by`, `artifacts`, `blocked_by` (each edge resolved: open / closed / unresolved) |
 | `start <n>` | `gh-axi issue edit <n> --add-assignee @me` |
 | `done <n> [--pr <url>]` | `gh-axi issue close <n> --reason completed [--comment "PR: <url>"]` |
+| `ship <pr> [--issue <n,…>] [--project <name>]` | `gh-axi pr merge <pr>` + close each linked issue (GitHub's `Closes/Fixes #<n>`, or the explicit `--issue` list) + `cf board sync <project>` — merge → close + mark done + board sync in one step |
+| `reconcile --repo <owner/repo> --board <n> [--yes] [--org <org>]` | `gh project item-list` + `gh project item-delete` — find (report) and, with `--yes`, remove board items from other repositories so `cf-queue list` done == `cf board status` Done |
 | `reopen <n>` | `gh-axi issue reopen <n>` |
 | `hold <n> [--kind founder]` | `gh-axi issue edit <n> --add-label hold` or `hold:founder` (`--kind captain` is a deprecated alias for `founder`, removed next release) |
 | `unhold <n>` | `gh-axi issue edit <n> --remove-label …` for the hold labels the issue carries (`already: true` when none) |

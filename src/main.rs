@@ -77,18 +77,26 @@ fn takes_value(name: &str) -> bool {
             | "by"
             | "epic"
             | "requested-by"
+            | "project"
+            | "board"
+            | "org"
+            | "issue"
     )
 }
 
 fn help() -> String {
     format!(
         "usage: {BIN} [command] [args] [flags]\n\
-         commands[13]:\n\
-         \x20 (none)=dashboard(list), add, list, show, start, done, reopen, hold, unhold, block, unblock, ready, version, update, setup\n\
+         commands[15]:\n\
+         \x20 (none)=dashboard(list), add, list, show, start, done, reopen, hold, unhold, block, unblock, ready, ship, reconcile, version, update, setup\n\
          state model:\n\
          \x20 queued = open + unassigned · in-flight = open + assigned · done = closed · hold = `hold`/`hold:founder` label · blocked = `blocked-by: #<n>` or `owner/repo#<m>` in body (still open)\n\
          body lines:\n\
          \x20 Parent epic: #<n> (add --epic) · Requested-by: owner/repo#<m> (add --requested-by) · Artifacts: <path> · shown by `show`\n\
+         ship (merge → close linked issues → board sync, one step):\n\
+         \x20 {BIN} ship <pr> [--issue <n,...>] [--project <name>] [--repo <owner/name>]\n\
+         reconcile (board back-fill: find/remove foreign board items so done == board Done):\n\
+         \x20 {BIN} reconcile --repo <owner/name> --board <n> [--yes] [--org <org>]\n\
          flags: --repo <owner/name>, --json, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} add \"Fix login\" --label bug\n\
@@ -98,6 +106,8 @@ fn help() -> String {
          \x20 {BIN} show 42\n\
          \x20 {BIN} start 42\n\
          \x20 {BIN} done 42 --pr https://github.com/o/r/pull/7\n\
+         \x20 {BIN} ship 42 --project codefactory\n\
+         \x20 {BIN} reconcile --repo thalixinc/codefactory --board 11\n\
          \x20 {BIN} hold 42 --kind founder\n\
          \x20 {BIN} block 42 --by 39 | --by owner/repo#3\n\
          \x20 {BIN} setup skill | setup hooks\n\
@@ -194,6 +204,42 @@ fn dispatch(args: &[String]) -> Result<()> {
         "unhold" => {
             let n = number(rest, 0, "issue")?;
             ops::unhold(n, repo.as_deref(), json)
+        }
+        "ship" => {
+            let n = number(rest, 0, "pr")?;
+            let project = parsed.value("project");
+            // Resolve the issues this PR closes (GitHub's `Closes/Fixes #<n>`), or an
+            // explicit `--issue` list, so the merge closes + marks done in one step.
+            let linked: Vec<u64> = if let Some(list) = parsed.value("issue") {
+                list.split(',')
+                    .map(|s| s.trim().trim_start_matches('#'))
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        s.parse::<u64>()
+                            .map_err(|_| QueueError::usage("invalid --issue number"))
+                    })
+                    .collect::<Result<Vec<u64>>>()?
+            } else {
+                gh::gh_pr_closing_issues(n, repo.as_deref())?
+            };
+            ops::ship(n, &linked, project.as_deref(), repo.as_deref(), json)
+        }
+        "reconcile" => {
+            let board = match parsed.value("board") {
+                Some(b) => b
+                    .trim_start_matches('#')
+                    .parse::<u64>()
+                    .map_err(|_| QueueError::usage("invalid --board number"))?,
+                None => return Err(QueueError::usage("reconcile needs --board <n>")),
+            };
+            let repo_name = repo.clone().ok_or_else(|| {
+                QueueError::usage("reconcile needs --repo <owner/repo> (the project's repository)")
+            })?;
+            let org = parsed
+                .value("org")
+                .unwrap_or_else(|| repo_name.split('/').next().unwrap_or("").to_string());
+            let apply = parsed.flag("yes");
+            ops::reconcile(&repo_name, board, &org, apply, json)
         }
         "block" | "unblock" => {
             let n = number(rest, 0, "issue")?;

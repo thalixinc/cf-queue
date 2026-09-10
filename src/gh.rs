@@ -327,6 +327,121 @@ pub fn gh_view_body(number: u64, repo: Option<&str>) -> Result<String> {
     Ok(v["body"].as_str().unwrap_or_default().to_string())
 }
 
+// ---------------------------------------------------------------------------
+// PR merge + board reconciliation (the merge → close + board-sync flow)
+// ---------------------------------------------------------------------------
+
+/// A linked issue a PR closes: `Closes #<n>` / `Fixes owner/repo#<n>` in the
+/// PR body and commit messages, resolved by GitHub into `closingIssuesReferences`.
+pub fn gh_pr_closing_issues(number: u64, repo: Option<&str>) -> Result<Vec<u64>> {
+    let n = number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "view", &n, "--json", "closingIssuesReferences"];
+    args.extend(repo_args(repo));
+    let text = run_gh(&args)?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| QueueError::operational(format!("cannot parse pr closing issues: {e}"), "GH_PARSE"))?;
+    let mut out: Vec<u64> = Vec::new();
+    for r in v["closingIssuesReferences"].as_array().cloned().unwrap_or_default() {
+        if let Some(num) = parse_closing_ref_number(&r) {
+            out.push(num);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// Extract the issue number from one `closingIssuesReferences` entry.
+pub fn parse_closing_ref_number(v: &serde_json::Value) -> Option<u64> {
+    v["number"].as_u64().or_else(|| {
+        v["url"]
+            .as_str()
+            .and_then(|u| u.rsplit('/').next())
+            .and_then(|s| s.parse::<u64>().ok())
+    })
+}
+
+/// One board item's identity, as rendered by `gh project item-list`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct BoardItem {
+    pub id: String,
+    #[serde(default)]
+    pub content: BoardContent,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct BoardContent {
+    #[serde(default)]
+    pub repository: String,
+    #[serde(default)]
+    pub number: Option<u64>,
+    #[serde(default)]
+    pub title: String,
+}
+
+/// List a project board's items (`gh project item-list <n> --owner <org>`).
+pub fn gh_board_items(board: u64, org: &str) -> Result<Vec<BoardItem>> {
+    let board = board.to_string();
+    let args: Vec<&str> = vec!["project", "item-list", &board, "--owner", org, "--format", "json", "--limit", "1000"];
+    let text = run_gh(&args)?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| QueueError::operational(format!("cannot parse gh project item-list: {e}"), "GH_PARSE"))?;
+    let items = v["items"].as_array().cloned().unwrap_or_default();
+    serde_json::from_value(serde_json::Value::Array(items))
+        .map_err(|e| QueueError::operational(format!("cannot parse board items: {e}"), "GH_PARSE"))
+}
+
+/// Delete one board item by its project-item id.
+pub fn gh_board_item_delete(board: u64, org: &str, item_id: &str) -> Result<()> {
+    let board = board.to_string();
+    let args: Vec<&str> = vec!["project", "item-delete", &board, "--owner", org, "--id", item_id];
+    run_gh(&args)?;
+    Ok(())
+}
+
+/// Run `cf board sync <project>` (the board is the view over the issues; the queue
+/// derives `done` from closed state, so the board must be refreshed in the same step).
+/// `cf` may be absent outside a Chief-of-Staff home — then the sync is skipped with a
+/// warning rather than failing the ship.
+pub fn run_cf_board_sync(project: &str) -> Result<String> {
+    let out = Command::new("cf")
+        .args(["board", "sync", project])
+        .output()
+        .map_err(|e| {
+            QueueError::operational(
+                format!("cf not runnable (board sync skipped): {e}"),
+                "CF_EXEC",
+            )
+        })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let first = stderr.lines().next().unwrap_or("unknown cf error");
+        eprintln!("warning: cf board sync skipped: {first}");
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// JSON-plane board sync: runs `cf board sync <project> --json` and discards its
+/// envelope (the caller emits the single JSON document for the whole ship).
+pub fn run_cf_board_sync_json(project: &str) -> Result<()> {
+    let out = Command::new("cf")
+        .args(["board", "sync", project, "--json"])
+        .output()
+        .map_err(|e| {
+            QueueError::operational(
+                format!("cf not runnable (board sync skipped): {e}"),
+                "CF_EXEC",
+            )
+        })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let first = stderr.lines().next().unwrap_or("unknown cf error");
+        eprintln!("warning: cf board sync skipped: {first}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +550,26 @@ mod tests {
         assert_eq!(later.epic(), Some(5));
         assert_eq!(none.requested_by(), None);
         assert_eq!(none.artifacts(), None);
+    }
+
+    #[test]
+    fn parses_closing_ref_number_from_number_or_url() {
+        let by_number = serde_json::json!({"number": 285, "url": "https://github.com/thalixinc/codefactory/issues/285"});
+        assert_eq!(parse_closing_ref_number(&by_number), Some(285));
+        // gh sometimes omits `number` on cross-repo references but keeps the url.
+        let by_url = serde_json::json!({"url": "https://github.com/thalixinc/cmux-axi/issues/6"});
+        assert_eq!(parse_closing_ref_number(&by_url), Some(6));
+        assert_eq!(parse_closing_ref_number(&serde_json::json!({})), None);
+        assert_eq!(parse_closing_ref_number(&serde_json::json!({"number": null})), None);
+    }
+
+    #[test]
+    fn deserializes_board_items() {
+        let text = r#"{"items":[{"id":"PVTI_1","status":"Done","content":{"repository":"thalixinc/codefactory","number":285,"title":"t"}},{"id":"PVTI_2","status":"Done","content":{"repository":"thalixinc/cmux-axi","number":6,"title":"layout"}}]}"#;
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let items: Vec<BoardItem> = serde_json::from_value(serde_json::Value::Array(v["items"].as_array().unwrap().clone())).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].content.repository, "thalixinc/codefactory");
+        assert_eq!(items[1].content.number, Some(6));
     }
 }

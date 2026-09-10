@@ -511,6 +511,175 @@ pub fn unhold(number: u64, repo: Option<&str>, json: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// ship (merge → close linked issues → board sync) + reconcile (board back-fill)
+// ---------------------------------------------------------------------------
+
+/// Merge a PR, then close every issue it closes and sync the board — one verb,
+/// no manual reconciliation. `project` names the registered project for the
+/// `cf board sync` tail; when absent the board sync is skipped with a note
+/// (cf-queue is repo-scoped and cannot reverse-map a repo to a registry project).
+pub fn ship(
+    number: u64,
+    linked: &[u64],
+    project: Option<&str>,
+    repo: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let n = number.to_string();
+    // 1. merge the PR (gh-axi is idempotent; an already-merged PR reports already).
+    let mut merge_args: Vec<&str> = vec!["pr", "merge", &n];
+    merge_args.extend(ghaxi_repo(repo));
+    gh::run_ghaxi(&merge_args)?;
+
+    // 2. close every linked issue still open (its queue state becomes `done` by derivation).
+    let mut closed: Vec<u64> = Vec::new();
+    for issue in linked {
+        match gh::issue_open(repo, *issue) {
+            Ok(true) => {
+                let issue_n = issue.to_string();
+                let mut c: Vec<&str> = vec!["issue", "close", &issue_n, "--reason", "completed"];
+                c.extend(ghaxi_repo(repo));
+                gh::run_ghaxi(&c)?;
+                closed.push(*issue);
+            }
+            Ok(false) => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    // 3. sync the board (the queue derives `done` from the closed state; the board is
+    //    the view, so it must be refreshed in the same step).
+    let mut synced = false;
+    if let Some(p) = project {
+        if json {
+            // Board sync JSON passes through only on the JSON plane (`cf board sync --json`);
+            // the ship envelope is the single JSON document the caller parses.
+            gh::run_cf_board_sync_json(p)?;
+        } else {
+            let out = gh::run_cf_board_sync(p)?;
+            println!("  board synced ({p})");
+            for line in out.lines().take(3) {
+                println!("    {line}");
+            }
+        }
+        synced = true;
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "ok": true, "action": "ship", "pr": number,
+                "closed_issues": closed, "board_synced": synced,
+                "project": project,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("ok: ship pr #{number}");
+        if closed.is_empty() {
+            println!("  0 linked issue(s) closed");
+        } else {
+            for i in &closed {
+                println!("  closed #{i}");
+            }
+        }
+        if !synced {
+            println!("  board sync skipped (pass --project <name> to sync the registered project's board)");
+        }
+    }
+    Ok(())
+}
+
+/// A foreign (non-`repo`) board item that must leave the project's board so
+/// `cf board status` Done agrees with `cf-queue list` done (the #285 back-fill).
+pub struct ForeignItem {
+    pub id: String,
+    pub repository: String,
+    pub number: Option<u64>,
+    pub title: String,
+}
+
+/// Find board items whose content lives in a different repository than `repo`
+/// (the "board includes a broader item set" delta). Report by default; remove
+/// only with `apply`, so a reconciliation is inspected before it mutates.
+pub fn reconcile(repo: &str, board: u64, org: &str, apply: bool, json: bool) -> Result<()> {
+    let items = gh::gh_board_items(board, org)?;
+    let foreign: Vec<ForeignItem> = items
+        .into_iter()
+        .filter(|i| !i.content.repository.is_empty() && i.content.repository != repo)
+        .map(|i| ForeignItem {
+            id: i.id,
+            repository: i.content.repository,
+            number: i.content.number,
+            title: i.content.title,
+        })
+        .collect();
+
+    // Remove first (only when asked), so the final envelope reports what actually happened.
+    let mut removed = 0usize;
+    if apply {
+        for f in &foreign {
+            gh::gh_board_item_delete(board, org, &f.id)?;
+            removed += 1;
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": true, "action": "reconcile", "repo": repo, "board": board,
+                "foreign": foreign.iter().map(|f| json!({
+                    "item_id": f.id, "repository": f.repository,
+                    "number": f.number, "title": f.title,
+                })).collect::<Vec<_>>(),
+                "removed": removed,
+            }))
+            .unwrap()
+        );
+        return Ok(());
+    }
+
+    let rows: Vec<Vec<String>> = foreign
+        .iter()
+        .map(|f| {
+            vec![
+                f.number.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+                f.repository.clone(),
+                f.title.clone(),
+            ]
+        })
+        .collect();
+    println!(
+        "{}",
+        toon::join(&[
+            toon::header(BIN, DESCRIPTION),
+            toon::list("foreign", &["number", "repository", "title"], &rows),
+            if apply {
+                format!("ok: reconcile {repo} (board #{board}) — removed {removed} foreign item(s)")
+            } else if foreign.is_empty() {
+                format!("ok: {repo} board #{board} has no foreign items — done == board Done")
+            } else {
+                format!(
+                    "foreign items on board #{board} not from {repo}: {}",
+                    foreign.len()
+                )
+            },
+        ])
+    );
+    if !apply && !foreign.is_empty() {
+        println!(
+            "{}",
+            toon::help(&[format!(
+                "run `cf-queue reconcile {repo} --board {board} --yes` to remove the above"
+            )])
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // block / unblock (body manipulation)
 // ---------------------------------------------------------------------------
 
