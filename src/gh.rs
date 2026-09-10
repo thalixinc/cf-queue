@@ -284,7 +284,7 @@ pub fn gh_list_issues(state: &str, repo: Option<&str>) -> Result<Vec<Issue>> {
         "--state",
         state,
         "--limit",
-        "100",
+        "1000",
         "--json",
         LIST_FIELDS,
     ];

@@ -262,14 +262,26 @@ pub fn list(state: Option<&str>, repo: Option<&str>, json: bool) -> Result<()> {
             )));
         }
     }
-    // "done" filters closed issues; everything else works from the open set.
-    let (issues, open_set): (Vec<gh::Issue>, HashSet<u64>) = if state == Some("done") {
-        let closed = gh::gh_list_issues("closed", repo)?;
-        (closed, HashSet::new())
-    } else {
-        let open = gh::gh_list_issues("open", repo)?;
-        let set: HashSet<u64> = open.iter().map(|i| i.number).collect();
-        (open, set)
+    // "done" filters closed issues; a specific open-state filter works from the open set; the
+    // UNFILTERED summary needs BOTH open and closed, so a closed issue counts toward `done`
+    // (matching the board). A closed issue is `done` before any edge is consulted.
+    let (issues, open_set): (Vec<gh::Issue>, HashSet<u64>) = match state {
+        Some("done") => {
+            let closed = gh::gh_list_issues("closed", repo)?;
+            (closed, HashSet::new())
+        }
+        Some(_) => {
+            let open = gh::gh_list_issues("open", repo)?;
+            let set: HashSet<u64> = open.iter().map(|i| i.number).collect();
+            (open, set)
+        }
+        None => {
+            let open = gh::gh_list_issues("open", repo)?;
+            let set: HashSet<u64> = open.iter().map(|i| i.number).collect();
+            let mut all = open;
+            all.extend(gh::gh_list_issues("closed", repo)?);
+            (all, set)
+        }
     };
     // Closed issues are `done` before any edge is consulted: no lookups for them.
     let blockers = if state == Some("done") {
@@ -580,6 +592,36 @@ mod tests {
         );
         assert_eq!(assemble_body(Some(12), None, ""), "Parent epic: #12\n");
         assert_eq!(assemble_body(None, None, "x"), "x\n");
+    }
+
+    // REGRESSION (#285): a CLOSED issue must count toward `done` in the unfiltered summary.
+    // `list` now fetches closed alongside open in the unfiltered path so `summarize` sees it;
+    // this pins that a closed issue's `state_of` is `done` (not dropped from the count).
+    #[test]
+    fn unfiltered_summary_counts_closed_as_done() {
+        let closed = gh::Issue {
+            number: 232,
+            title: "shipped".into(),
+            state: "CLOSED".into(),
+            assignees: vec![],
+            labels: vec![],
+            body: String::new(),
+            url: String::new(),
+        };
+        let open = gh::Issue {
+            number: 999,
+            title: "open one".into(),
+            state: "OPEN".into(),
+            assignees: vec![],
+            labels: vec![],
+            body: String::new(),
+            url: String::new(),
+        };
+        let blockers = gh::Blockers::default();
+        let summary = summarize(&[closed, open], &blockers);
+        let find = |s: &str| summary.iter().find(|(k, _)| k == s).map(|(_, v)| *v).unwrap_or(0);
+        assert_eq!(find("done"), 1, "a closed issue must count as done");
+        assert_eq!(find("queued"), 1, "an unassigned open issue is queued");
     }
 
     #[test]
