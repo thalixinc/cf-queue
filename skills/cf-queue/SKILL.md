@@ -22,6 +22,8 @@ Core verbs:
 - `cf-queue ready` — work that is dispatchable now (open, unassigned, un-held, un-blocked).
 - `cf-queue start <n>` — claim it (assign yourself → in-flight).
 - `cf-queue done <n> [--pr <url>]` — close it.
+- `cf-queue ship <pr> [--issue <n,…>] [--project <name>]` — merge the PR, close its linked issue(s), sync the board, in one step (merge → close + mark done + board sync).
+- `cf-queue reconcile --repo <owner/repo> --board <n> [--yes]` — find (and with `--yes`, remove) board items from other repositories so `done` == board `Done`.
 - `cf-queue show <n>` — one issue with `epic`, `requested_by`, `artifacts`, `blocked_by` (each edge resolved).
 - `cf-queue hold <n> [--kind founder]` / `unhold <n>` — pause / resume (`hold:founder` = waiting on the founder).
 - `cf-queue block <n> --by <m>|owner/repo#<m>` / `unblock <n> --by …` — dependency edges, same-repo or cross-repo.
