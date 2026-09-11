@@ -256,8 +256,7 @@ fn dispatch(args: &[String]) -> Result<()> {
             }
         }
         "version" => {
-            version::cmd_version();
-            Ok(())
+            version::cmd_version(parsed.flag("yes"))
         }
         "update" => version::cmd_update(parsed.flag("check"), json),
         "setup" => {
