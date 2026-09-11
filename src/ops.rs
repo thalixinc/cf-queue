@@ -438,7 +438,38 @@ pub fn start(number: u64, repo: Option<&str>, json: bool) -> Result<()> {
     mutation(&args, &format!("start {number} -> in-flight"), json)
 }
 
+/// The close-before-merge decision: `PR <url> not merged (state=X); merge first` when the PR
+/// state is anything but `MERGED`. Pure (no shell-out) so the OPEN→refuse / MERGED→allow pair
+/// is unit-testable against a fixture state string.
+fn refuse_if_not_merged(url: &str, state: &str) -> Result<()> {
+    if state == "MERGED" {
+        Ok(())
+    } else {
+        Err(QueueError::usage(format!(
+            "PR {url} not merged (state={state}); merge first"
+        )))
+    }
+}
+
 pub fn done(number: u64, pr: Option<&str>, repo: Option<&str>, json: bool) -> Result<()> {
+    // Invariant (#321): when a PR is supplied, it MUST be MERGED before the ticket closes.
+    // A seat's optimism ("I opened the PR, so done") is refused here, not a discipline nudge:
+    // close-before-merge is a queue-tool invariant.
+    if let Some(url) = pr {
+        // Resolve the PR reference (URL or bare number) to its owner/repo + number.
+        let (pr_repo, pr_number) = match gh::parse_pr_url(url) {
+            Some(r) => r,
+            None => {
+                return Err(QueueError::usage(format!(
+                    "PR reference {url:?} is not a GitHub pull request URL; close-before-merge cannot be verified"
+                )))
+            }
+        };
+        let repo_for_pr = if pr_repo.is_empty() { repo } else { Some(pr_repo.as_str()) };
+        let state = gh::gh_pr_state(pr_number, repo_for_pr)?;
+        refuse_if_not_merged(url, &state)?;
+    }
+
     let n = number.to_string();
     let mut args: Vec<&str> = vec!["issue", "close", &n, "--reason", "completed"];
     let comment = pr.map(|u| format!("PR: {u}"));
@@ -810,5 +841,17 @@ mod tests {
         assert_eq!(hold_label(Some("founder")).unwrap(), "hold:founder");
         assert_eq!(hold_label(Some("captain")).unwrap(), "hold:founder");
         assert!(hold_label(Some("boss")).is_err());
+    }
+
+    // INVARIANT (#321): close-before-merge — a MERGED PR allows the close, an OPEN PR refuses.
+    #[test]
+    fn close_requires_a_merged_pr() {
+        let url = "https://github.com/thalixinc/codefactory/pull/314";
+        // OPEN PR → refuse with the precise message.
+        let err = refuse_if_not_merged(url, "OPEN").unwrap_err();
+        assert!(err.message.contains("not merged (state=OPEN)"));
+        assert!(err.message.contains("merge first"));
+        // MERGED PR → allow.
+        assert!(refuse_if_not_merged(url, "MERGED").is_ok());
     }
 }
