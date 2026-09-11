@@ -95,6 +95,9 @@ fn help() -> String {
          \x20 Parent epic: #<n> (add --epic) · Requested-by: owner/repo#<m> (add --requested-by) · Artifacts: <path> · shown by `show`\n\
          ship (merge → close linked issues → board sync, one step):\n\
          \x20 {BIN} ship <pr> [--issue <n,...>] [--project <name>] [--repo <owner/name>]\n\
+         done (close the ticket; INVARIANT — a `--pr` must be MERGED first):\n\
+         \x20 {BIN} done <n> --pr https://github.com/o/r/pull/<n>   refuses unless the PR state is MERGED ('PR <url> not merged (state=X); merge first'), leaving the ticket open\n\
+         \x20 {BIN} done <n>                                       no PR: closes as today (non-PR work)\n\
          reconcile (board back-fill: find/remove foreign board items so done == board Done):\n\
          \x20 {BIN} reconcile --repo <owner/name> --board <n> [--yes] [--org <org>]\n\
          flags: --repo <owner/name>, --json, --help, -v/-V/--version\n\

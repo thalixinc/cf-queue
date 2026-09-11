@@ -331,6 +331,42 @@ pub fn gh_view_body(number: u64, repo: Option<&str>) -> Result<String> {
 // PR merge + board reconciliation (the merge → close + board-sync flow)
 // ---------------------------------------------------------------------------
 
+/// Parse a GitHub PR URL into `(owner/repo, number)`. Accepts
+/// `https://github.com/<owner>/<repo>/pull/<n>[#...]` and a bare `<n>`. Returns `None` for
+/// anything that is not a PR reference (so a non-PR `--pr` can't silently pass the guard).
+pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
+    let s = url.trim().trim_end_matches(['/', '#']);
+    // Bare number: `57` (repo resolved by gh's default detection via --repo).
+    if let Ok(n) = s.parse::<u64>() {
+        return Some((String::new(), n));
+    }
+    // Full URL: https://github.com/<owner>/<repo>/pull/<n>.
+    let path = s.split("://").nth(1)?; // https://github.com/o/r/pull/7
+    let mut segs = path.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>();
+    // Drop the host (and any leading path if a non-github host is used).
+    let host = segs.remove(0);
+    if !host.contains("github.com") {
+        return None;
+    }
+    let n_index = segs.iter().position(|p| *p == "pull")?;
+    let owner = segs.get(n_index.saturating_sub(2))?.to_string();
+    let repo = segs.get(n_index.saturating_sub(1))?.to_string();
+    let number = segs.get(n_index + 1)?.parse::<u64>().ok()?;
+    Some((format!("{owner}/{repo}"), number))
+}
+
+/// The state of a PR (`OPEN`, `MERGED`, `CLOSED`, `DRAFT`…) as `gh pr view --json state`.
+/// `repo` names the PR's owner/repo (from `parse_pr_url`), else gh's default detection.
+pub fn gh_pr_state(pr_number: u64, repo: Option<&str>) -> Result<String> {
+    let n = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "view", &n, "--json", "state"];
+    args.extend(repo_args(repo));
+    let text = run_gh(&args)?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| QueueError::operational(format!("cannot parse pr state: {e}"), "GH_PARSE"))?;
+    Ok(v["state"].as_str().unwrap_or("").to_string())
+}
+
 /// A linked issue a PR closes: `Closes #<n>` / `Fixes owner/repo#<n>` in the
 /// PR body and commit messages, resolved by GitHub into `closingIssuesReferences`.
 pub fn gh_pr_closing_issues(number: u64, repo: Option<&str>) -> Result<Vec<u64>> {
@@ -571,5 +607,23 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].content.repository, "thalixinc/codefactory");
         assert_eq!(items[1].content.number, Some(6));
+    }
+
+    #[test]
+    fn parses_pr_url_into_repo_and_number() {
+        assert_eq!(
+            parse_pr_url("https://github.com/thalixinc/codefactory/pull/314"),
+            Some(("thalixinc/codefactory".to_string(), 314))
+        );
+        // trailing junk (fragment/diff anchors) is tolerated
+        assert_eq!(
+            parse_pr_url("https://github.com/thalixinc/codefactory/pull/314/files"),
+            Some(("thalixinc/codefactory".to_string(), 314))
+        );
+        // a bare number parses (repo resolved by gh default detection)
+        assert_eq!(parse_pr_url("57"), Some((String::new(), 57)));
+        // non-PR references are refused so the guard can't be silently bypassed
+        assert_eq!(parse_pr_url("https://github.com/thalixinc/codefactory/issues/314"), None);
+        assert_eq!(parse_pr_url("not-a-pr"), None);
     }
 }
