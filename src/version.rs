@@ -15,7 +15,13 @@ pub fn cmd_version(yes: bool) -> Result<()> {
 
     // The update-available surface (mirrors cf #368): a newer release → "update available";
     // `--yes` auto-updates; otherwise an interactive [y/N] (non-tty = reported, never blocks).
-    let latest = fetch_latest_version()?;
+    //
+    // The availability fetch is NON-FATAL (mirrors cf #378): offline / rate-limited / 404 —
+    // anything that makes the check fail — degrades to just the version line (exit 0), never a
+    // hard error. `cf-queue version` must never be broken by an unreachable update feed.
+    let Some(latest) = fetch_latest_version().ok() else {
+        return Ok(()); // fetch failure: just the version line, no prompt.
+    };
     if semver_cmp(&latest, VERSION) != Ordering::Greater {
         return Ok(()); // on latest: just the version line, no prompt.
     }
