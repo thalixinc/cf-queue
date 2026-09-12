@@ -100,6 +100,10 @@ fn help() -> String {
          \x20 {BIN} done <n>                                       no PR: closes as today (non-PR work)\n\
          reconcile (board back-fill: find/remove foreign board items so done == board Done):\n\
          \x20 {BIN} reconcile --repo <owner/name> --board <n> [--yes] [--org <org>]\n\
+         version & updates (installs the latest release via `cargo install --git <repo> --force`):\n\
+         \x20 {BIN} version                prints the version; a newer release prompts [y/N] (non-tty: reported, never blocks)\n\
+         \x20 {BIN} version --yes          prints the version and auto-updates when a newer release exists\n\
+         \x20 {BIN} update [--check] [--json]   update now; --check reports available; --json for machine-read\n\
          flags: --repo <owner/name>, --json, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} add \"Fix login\" --label bug\n\
@@ -114,7 +118,7 @@ fn help() -> String {
          \x20 {BIN} hold 42 --kind founder\n\
          \x20 {BIN} block 42 --by 39 | --by owner/repo#3\n\
          \x20 {BIN} setup skill | setup hooks\n\
-         \x20 {BIN} version | update [--check]"
+         \x20 {BIN} version [--yes] | update [--check] [--json]"
     )
 }
 
