@@ -73,7 +73,19 @@ cf-queue hold 42 --kind founder            # waits on the founder (label hold:fo
 | `unblock <n> --by …` | remove that line from body |
 | `ready` | open + unassigned + un-held + un-blocked (cross-repo blockers checked with `gh issue view -R owner/repo <m> --json state`) |
 
-Global flags: `--repo <owner/name>` (default: gh's repo detection), `--json`, `--help`, `-v/--version`. Plus `version`, `update [--check]`, `setup skill|hooks [--project]` — same shape as the rest of the AXI family.
+Global flags: `--repo <owner/name>` (default: gh's repo detection), `--json`, `--help`, `-v/--version`. Plus `version [--yes]`, `update [--check] [--json]`, `setup skill|hooks [--project]` — same shape as the rest of the AXI family.
+
+## Version & updates
+
+```sh
+cf-queue version                # print the version; a newer release prompts [y/N]
+cf-queue version --yes          # print the version and auto-update when newer
+cf-queue update                 # install the latest release now
+cf-queue update --check         # report whether an update is available (no install)
+cf-queue update --check --json  # machine-readable: package, current, latest, available
+```
+
+`version` always prints `cf-queue <version>` first (script-safe; `-v`/`-V`/`--version` stop there). A newer release prompts `[y/N]`; on a non-tty it reports the update instead of blocking. Answering `y`, or passing `--yes`, installs the latest via `cargo install --git https://github.com/thalixinc/cf-queue --force`. `update` installs the latest now; `--check` only reports; `--json` switches to machine-readable output.
 
 ## Output contract
 
