@@ -41,6 +41,7 @@ cf-queue block 42 --by 39     # 42 depends on 39
 cf-queue ready                # 42 disappears until 39 closes
 cf-queue block 42 --by thalixinc/other#3   # cross-repo edge, resolved by other#3's state
 cf-queue add "Status field for A#45" --epic 12 --requested-by thalixinc/a#45 --label task
+cf-queue add "Shipping epic" --initiative 7 --label epic
 cf-queue hold 42 --kind founder            # waits on the founder (label hold:founder)
 ```
 
@@ -48,6 +49,7 @@ cf-queue hold 42 --kind founder            # waits on the founder (label hold:fo
 
 | Line | Written by | Read by |
 |---|---|---|
+| `Parent initiative: <n>` (first line) | `add --initiative <n>` | codefactory `cf board` initiative nesting |
 | `Parent epic: #<n>` (first line) | `add --epic <n>` (also links the sub-issue via `gh-axi issue subissue add`) | `show` → `epic` |
 | `Requested-by: owner/repo#<m>` | `add --requested-by` | `show` → `requested_by` |
 | `Artifacts: <path>` | the SDLC tooling | `show` → `artifacts` |
@@ -59,7 +61,7 @@ cf-queue hold 42 --kind founder            # waits on the founder (label hold:fo
 
 | Verb | gh call |
 |---|---|
-| `add <title> [--body/--body-file] [--label]… [--assignee]… [--epic <n>] [--requested-by owner/repo#<m>]` | `gh-axi issue create` (+ `issue subissue add <n> <new>` with `--epic`) |
+| `add <title> [--body/--body-file] [--label]… [--assignee]… [--epic <n>] [--initiative <n>] [--requested-by owner/repo#<m>]` | `gh-axi issue create` (+ `issue subissue add <n> <new>` with `--epic`) |
 | `list [--state queued\|in-flight\|done\|hold\|blocked]` | `gh issue list --json …` + local derivation |
 | `show <n>` | `gh issue view --json …`; prints `epic`, `requested_by`, `artifacts`, `blocked_by` (each edge resolved: open / closed / unresolved) |
 | `start <n>` | `gh-axi issue edit <n> --add-assignee @me` |
