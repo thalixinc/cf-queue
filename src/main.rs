@@ -108,8 +108,8 @@ fn help() -> String {
          flags: --repo <owner/name>, --json, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} add \"Fix login\" --label bug\n\
-         \x20 {BIN} add "Status field" --epic 12 --requested-by owner/repo#45 --label task\n\
-         \x20 {BIN} add "Shipping epic" --initiative 7 --label epic\n\
+         \x20 {BIN} add \"Status field\" --epic 12 --requested-by owner/repo#45 --label task\n\
+         \x20 {BIN} add \"Shipping epic\" --initiative 7 --label epic\n\
          \x20 {BIN} list --state blocked\n\
          \x20 {BIN} ready\n\
          \x20 {BIN} show 42\n\
