@@ -73,9 +73,17 @@ fn with_temp_body<T>(tag: &str, text: &str, f: impl FnOnce(&str) -> Result<T>) -
 // add
 // ---------------------------------------------------------------------------
 
-/// Machine lines first (`Parent epic:`, `Requested-by:`), then the author's body.
-fn assemble_body(epic: Option<u64>, requested_by: Option<&Edge>, user: &str) -> String {
+/// Machine lines first (`Parent initiative:`, `Parent epic:`, `Requested-by:`), then the author's body.
+fn assemble_body(
+    initiative: Option<u64>,
+    epic: Option<u64>,
+    requested_by: Option<&Edge>,
+    user: &str,
+) -> String {
     let mut out = String::new();
+    if let Some(n) = initiative {
+        out.push_str(&format!("Parent initiative: {n}\n"));
+    }
     if let Some(n) = epic {
         out.push_str(&format!("Parent epic: #{n}\n"));
     }
@@ -112,6 +120,7 @@ pub fn add(
     labels: &[String],
     assignees: &[String],
     epic: Option<u64>,
+    initiative: Option<u64>,
     requested_by: Option<&str>,
     repo: Option<&str>,
     json: bool,
@@ -131,10 +140,20 @@ pub fn add(
     if body.is_some() && body_file.is_some() {
         return Err(QueueError::usage("use only one of --body / --body-file"));
     }
+    if epic.is_some() && initiative.is_some() {
+        return Err(QueueError::usage(
+            "use only one of --epic / --initiative (an epic belongs to an initiative, a task to an epic)",
+        ));
+    }
     if let Some(n) = epic {
         // Fail before creating anything if the parent does not exist.
         gh::gh_view_issue(n, repo)
             .map_err(|e| QueueError::usage(format!("--epic {n}: {}", e.message)))?;
+    }
+    if let Some(n) = initiative {
+        // Fail before creating anything if the parent does not exist.
+        gh::gh_view_issue(n, repo)
+            .map_err(|e| QueueError::usage(format!("--initiative {n}: {}", e.message)))?;
     }
 
     let mut args: Vec<&str> = vec!["issue", "create"];
@@ -150,7 +169,7 @@ pub fn add(
         args.push(a);
     }
 
-    let out = if epic.is_some() || requested_by.is_some() {
+    let out = if epic.is_some() || initiative.is_some() || requested_by.is_some() {
         let user = match (body, body_file) {
             (Some(b), _) => b.to_string(),
             (None, Some(f)) => std::fs::read_to_string(f).map_err(|e| {
@@ -158,7 +177,7 @@ pub fn add(
             })?,
             (None, None) => String::new(),
         };
-        let text = assemble_body(epic, requested_by.as_ref(), &user);
+        let text = assemble_body(initiative, epic, requested_by.as_ref(), &user);
         with_temp_body("add", &text, |path| {
             let mut a = args.clone();
             a.push("--body-file");
@@ -209,7 +228,7 @@ pub fn add(
             serde_json::to_string(&json!({
                 "ok": true, "action": "add", "title": title,
                 "number": new.as_ref().map(|(n, _)| *n), "url": new.as_ref().map(|(_, u)| u.clone()),
-                "epic": epic, "requested_by": requested_by.map(|e| e.to_string()),
+                "epic": epic, "initiative": initiative, "requested_by": requested_by.map(|e| e.to_string()),
             }))
             .unwrap()
         );
@@ -787,11 +806,20 @@ mod tests {
     fn body_puts_machine_lines_first() {
         let rb = Edge::parse("thalixinc/a#45").unwrap();
         assert_eq!(
-            assemble_body(Some(12), Some(&rb), "## Context\nwhy\n"),
+            assemble_body(None, Some(12), Some(&rb), "## Context\nwhy\n"),
             "Parent epic: #12\nRequested-by: thalixinc/a#45\n\n## Context\nwhy\n"
         );
-        assert_eq!(assemble_body(Some(12), None, ""), "Parent epic: #12\n");
-        assert_eq!(assemble_body(None, None, "x"), "x\n");
+        assert_eq!(assemble_body(None, Some(12), None, ""), "Parent epic: #12\n");
+        assert_eq!(assemble_body(None, None, None, "x"), "x\n");
+        // Initiative line is FIRST and carries no `#`.
+        assert_eq!(
+            assemble_body(Some(7), None, None, ""),
+            "Parent initiative: 7\n"
+        );
+        assert_eq!(
+            assemble_body(Some(7), None, Some(&rb), ""),
+            "Parent initiative: 7\nRequested-by: thalixinc/a#45\n"
+        );
     }
 
     // REGRESSION (#285): a CLOSED issue must count toward `done` in the unfiltered summary.

@@ -17,7 +17,7 @@ cf-queue --help     # full command reference
 
 Core verbs:
 
-- `cf-queue add <title> [--body …] [--label …] [--assignee …] [--epic <n>] [--requested-by owner/repo#<m>]` — file work (creates an issue; `--epic` writes `Parent epic: #<n>` first and links the sub-issue).
+- `cf-queue add <title> [--body …] [--label …] [--assignee …] [--epic <n>] [--initiative <n>] [--requested-by owner/repo#<m>]` — file work (creates an issue; `--epic` writes `Parent epic: #<n>` first and links the sub-issue; `--initiative` writes `Parent initiative: <n>` first, no sub-issue link).
 - `cf-queue list [--state queued|in-flight|done|hold|blocked]` — the queue.
 - `cf-queue ready` — work that is dispatchable now (open, unassigned, un-held, un-blocked).
 - `cf-queue start <n>` — claim it (assign yourself → in-flight).

@@ -76,6 +76,7 @@ fn takes_value(name: &str) -> bool {
             | "kind"
             | "by"
             | "epic"
+            | "initiative"
             | "requested-by"
             | "project"
             | "board"
@@ -92,7 +93,7 @@ fn help() -> String {
          state model:\n\
          \x20 queued = open + unassigned · in-flight = open + assigned · done = closed · hold = `hold`/`hold:founder` label · blocked = `blocked-by: #<n>` or `owner/repo#<m>` in body (still open)\n\
          body lines:\n\
-         \x20 Parent epic: #<n> (add --epic) · Requested-by: owner/repo#<m> (add --requested-by) · Artifacts: <path> · shown by `show`\n\
+         \x20 Parent epic: #<n> (add --epic) · Parent initiative: <n> (add --initiative) · Requested-by: owner/repo#<m> (add --requested-by) · Artifacts: <path> · shown by `show`\n\
          ship (merge → close linked issues → board sync, one step):\n\
          \x20 {BIN} ship <pr> [--issue <n,...>] [--project <name>] [--repo <owner/name>]\n\
          done (close the ticket; INVARIANT — a `--pr` must be MERGED first):\n\
@@ -108,6 +109,7 @@ fn help() -> String {
          examples:\n\
          \x20 {BIN} add \"Fix login\" --label bug\n\
          \x20 {BIN} add \"Status field\" --epic 12 --requested-by owner/repo#45 --label task\n\
+         \x20 {BIN} add \"Shipping epic\" --initiative 7 --label epic\n\
          \x20 {BIN} list --state blocked\n\
          \x20 {BIN} ready\n\
          \x20 {BIN} show 42\n\
@@ -168,6 +170,14 @@ fn dispatch(args: &[String]) -> Result<()> {
                 ),
                 None => None,
             };
+            let initiative = match parsed.value("initiative") {
+                Some(i) => Some(
+                    i.trim_start_matches('#')
+                        .parse::<u64>()
+                        .map_err(|_| QueueError::usage("invalid --initiative number"))?,
+                ),
+                None => None,
+            };
             let requested_by = parsed.value("requested-by");
             ops::add(
                 title,
@@ -176,6 +186,7 @@ fn dispatch(args: &[String]) -> Result<()> {
                 &labels,
                 &assignees,
                 epic,
+                initiative,
                 requested_by.as_deref(),
                 repo.as_deref(),
                 json,
