@@ -104,6 +104,17 @@ fn created(out: &str) -> Option<(u64, String)> {
     Some((n.parse().ok()?, url.to_string()))
 }
 
+/// The body flag(s) for `gh-axi issue create`. `gh-axi` requires BOTH `--title` and `--body` when
+/// non-interactive (#44), so a missing `--body`/`--body-file` falls back to an empty `--body` and
+/// the argv never omits it.
+fn body_args<'a>(body: Option<&'a str>, body_file: Option<&'a str>) -> Vec<&'a str> {
+    match (body, body_file) {
+        (Some(b), _) => vec!["--body", b],
+        (None, Some(f)) => vec!["--body-file", f],
+        (None, None) => vec!["--body", ""],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     title: &str,
@@ -166,14 +177,7 @@ pub fn add(
             gh::run_ghaxi(&a)
         })?
     } else {
-        if let Some(b) = body {
-            args.push("--body");
-            args.push(b);
-        }
-        if let Some(f) = body_file {
-            args.push("--body-file");
-            args.push(f);
-        }
+        args.extend(body_args(body, body_file));
         gh::run_ghaxi(&args)?
     };
 
@@ -792,6 +796,16 @@ mod tests {
         );
         assert_eq!(assemble_body(Some(12), None, ""), "Parent epic: #12\n");
         assert_eq!(assemble_body(None, None, "x"), "x\n");
+    }
+
+    // REGRESSION (#44): `gh-axi issue create` requires `--title` AND `--body` when
+    // non-interactive; `add` must never omit the body flag, so a missing body/body-file
+    // falls back to an empty `--body`.
+    #[test]
+    fn add_always_passes_a_body_flag() {
+        assert_eq!(body_args(Some("hi"), None), vec!["--body", "hi"]);
+        assert_eq!(body_args(None, Some("f.md")), vec!["--body-file", "f.md"]);
+        assert_eq!(body_args(None, None), vec!["--body", ""]);
     }
 
     // REGRESSION (#285): a CLOSED issue must count toward `done` in the unfiltered summary.
